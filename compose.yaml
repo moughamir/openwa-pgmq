@@ -1,0 +1,88 @@
+name: openwa
+services:
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:0.23.7@sha256:9a9eeee07de00902ca41b30c67cc4a3bb2b219df5c5e54357994f66a1808ee12
+    restart: unless-stopped
+    stop_grace_period: 45s
+    mem_limit: ${OPENWA_MEM_LIMIT:-2g}
+    pids_limit: 2048
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    shm_size: 256mb
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - '127.0.0.1:2785:2785'
+    volumes:
+      # DB and media state now live in Supabase Postgres + Storage.
+      # Volume keeps only WhatsApp auth/session files, not the database.
+      - openwa_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '2785'
+      API_MASTER_KEY: ${API_MASTER_KEY:?Set API_MASTER_KEY in .env}
+      ENGINE_TYPE: ${ENGINE_TYPE:-baileys}
+      AUTO_START_SESSIONS: 'true'
+      ENABLE_SWAGGER: 'false'
+      # --- Supabase Postgres replaces SQLite ---
+      DATABASE_TYPE: postgres
+      DATABASE_URL: ${SUPABASE_DB_URL:?Set SUPABASE_DB_URL in .env}
+      DATABASE_SYNCHRONIZE: 'false'
+      MAIN_DATABASE_URL: ${SUPABASE_DB_URL:?Set SUPABASE_DB_URL in .env}
+      MAIN_DATABASE_SYNCHRONIZE: 'false'
+      # --- Session/auth files stay local on the volume ---
+      SESSION_DATA_PATH: /app/data/sessions
+      BAILEYS_AUTH_DIR: /app/data/baileys
+      # --- Storage: point at Supabase Storage's S3-compatible endpoint ---
+      STORAGE_TYPE: s3
+      STORAGE_S3_ENDPOINT: ${SUPABASE_S3_ENDPOINT:?Set SUPABASE_S3_ENDPOINT in .env}
+      STORAGE_S3_BUCKET: ${SUPABASE_S3_BUCKET:-openwa-media}
+      STORAGE_S3_ACCESS_KEY_ID: ${SUPABASE_S3_ACCESS_KEY_ID:?Set SUPABASE_S3_ACCESS_KEY_ID in .env}
+      STORAGE_S3_SECRET_ACCESS_KEY: ${SUPABASE_S3_SECRET_ACCESS_KEY:?Set SUPABASE_S3_SECRET_ACCESS_KEY in .env}
+      STORAGE_S3_REGION: ${SUPABASE_S3_REGION:-us-east-1}
+      STORAGE_S3_FORCE_PATH_STYLE: 'true'
+      # --- Redis ---
+      REDIS_ENABLED: 'true'
+      REDIS_URL: redis://redis:6379
+      CSP_UPGRADE_INSECURE_REQUESTS: ${CSP_UPGRADE_INSECURE_REQUESTS:-true}
+    healthcheck:
+      test: [CMD, curl, -fsS, 'http://127.0.0.1:2785/api/health/ready']
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: [redis-server, --save, '', --appendonly, 'no']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    profiles: [https]
+    depends_on:
+      openwa:
+        condition: service_healthy
+    ports: ['80:80', '443:443']
+    environment:
+      OPENWA_DOMAIN: ${OPENWA_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  openwa_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
